@@ -1,8 +1,9 @@
+#NOTE: Cannot use LLD, there's a bug with nvptxcompiler
 all: test libllvm-gpu.so 
 
 nvptx=${CUDA_PATH}/lib64/libnvptxcompiler_static.a
-links:=-lrt -lcurses -ldl -lpthread -lz -lLLVM
-incs=-I${CUDA_PATH}/include/  -I${CUDA_PATH}/targets/x86_64-linux/include
+links:=-lrt -lcurses -ldl -lpthread -lz -lLLVM-16 -L/opt/kitsune/lib
+incs=-I${CUDA_PATH}/include/  -I${CUDA_PATH}/targets/x86_64-linux/include -I/opt/kitsune/include
 opts=-g -fPIC
 flags=${links} ${incs} ${opts} -Wall 
 clang=clang++ 

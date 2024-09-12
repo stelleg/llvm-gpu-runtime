@@ -29,8 +29,10 @@ void *gpuManagedMalloc(uint64_t n){
 			return hipManagedMalloc(n);
 		case cuda:
 			return cudaManagedMalloc(n);
-		default:
+    case spirv:
 			err("no spirv managed malloc");
+		default:
+      return malloc(n); 
 	}	
 	return NULL;
 }

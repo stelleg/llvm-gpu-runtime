@@ -16,10 +16,20 @@
 #include<llvm/Support/raw_os_ostream.h>
 #include<llvm/Target/TargetMachine.h>
 #include<llvm/Support/ToolOutputFile.h>
-#include<llvm/Support/TargetRegistry.h>
-#include<llvm/Transforms/IPO/PassManagerBuilder.h>
-#define __HIP_PLATFORM_HCC__ 1
-#include<hip/hip_runtime.h>
+#include<llvm/ADT/StringExtras.h>
+#include<llvm/MC/TargetRegistry.h>
+
+/*
+void llvm-gpu-debug(const char* msg){
+  if(const char* env_p = std::getenv("DEBUG_LLVM_HIP")){
+    std::cout << msg << std::endl;
+  }
+
+}
+*/
+//#include<llvm/Transforms/IPO/PassManagerBuilder.h>
+#define __HIP_PLATFORM_AMD__ 1
+#include<hip/hip_runtime_api.h>
 
 #define declare(name) decltype(name)* name##_p = NULL
 #define tryLoad(name) name##_p = (decltype(name)*)dlsym(hiphandle, #name)
@@ -64,9 +74,9 @@ int initHIP(){
 	tryLoad(hipInit); 
 	tryLoad(hipGetErrorString);
   hipHostMalloc_p = (decltype(hipHostMalloc_p))(dlsym(hiphandle, "hipHostMalloc")); 
-	hipInit_p(0); 
+	checkHIP(hipInit_p(0)); 
 	int count;
-	hipGetDeviceCount_p(&count); 
+	checkHIP(hipGetDeviceCount_p(&count)); 
 	if(count == 0) return false; 
   return hiphandle != NULL;
 }
@@ -82,16 +92,19 @@ void* launchHIPKernel(llvm::Module& m, void** args, size_t n) {
   legacy::PassManager PM;
   legacy::FunctionPassManager FPM(&m);
 	int deviceId; 		
-	hipGetDevice_p(&deviceId); 
+	checkHIP(hipGetDevice_p(&deviceId)); 
 	hipDeviceProp_t prop;
-	hipGetDeviceProperties_p(&prop, deviceId);
-	std::string gcnarch = "gfx" + std::to_string(prop.gcnArch); 
+	checkHIP(hipGetDeviceProperties_p(&prop, deviceId));
+  printf("name: %s\n", prop.name); 
+  printf("gcnArchName: %s\n", prop.gcnArchName); 
+  // TODO: gcnArchName broken
+	std::string gcnarch = "gfx1032"; //(prop.gcnArchName); 
   Triple TT("amdgcn", "amd", "amdhsa"); 
   m.setTargetTriple(TT.str()); 
   
   Function& F = *m.getFunction("kitsune_kernel");
 
-  AttrBuilder Attrs;
+  AttrBuilder Attrs(ctx);
   Attrs.addAttribute("target-cpu", gcnarch);
   //Attrs.addAttribute("target-features", cudafeatures + ",+" + cudaarch);
   /*
@@ -101,10 +114,74 @@ void* launchHIPKernel(llvm::Module& m, void** args, size_t n) {
   F.removeFnAttr("target-cpu");
   F.removeFnAttr("target-features");
   F.setCallingConv(llvm::CallingConv::AMDGPU_KERNEL); 
-  F.addAttributes(AttributeList::FunctionIndex, Attrs);
+  F.addFnAttrs(Attrs);
 
   auto tid = Intrinsic::getDeclaration(&m, Intrinsic::amdgcn_workitem_id_x);
 
+  /*
+  // accumulate reductions in loop
+  //const std::vector<BasicBlock*>& blocks = L->getBlocks(); 
+  std::set<std::pair<CallInst*, Type*>> reductions;
+  for (BasicBlock &BB : F){
+    for (Instruction &I : BB) {
+      if(auto ci = dyn_cast<CallInst>(&I)){
+        auto f = ci->getCalledFunction(); 
+        if(f->getAttributes().hasAttrSomewhere(Attribute::KitsuneReduction)){
+          std::cout << "Found reduction var: " << ci->getArgOperand(0)->getName().str() << 
+                               "with reduction function: " << f->getName().str() << "\n"; 
+          auto ty = ci->getArgOperand(1)->getType(); 
+          reductions.insert(std::make_pair(ci, ty)); 
+          //TODO: check the type to confirm valid reduction
+        }
+      }
+    }
+  }
+
+  // accumulate reductions in epilog loop
+  std::cout << "Found " << reductions.size() << " reduction variables in kernel\n"; 
+
+  std::vector<std::tuple<CallInst*, Value* , Value*, Type*>> redMap; 
+  for(auto &pair : reductions){
+    auto ci = pair.first; 
+    auto ptr = ci->getArgOperand(0); 
+    auto ty = pair.second; 
+    IRBuilder<> BH(NewLoop->getHeader()->getTerminator()); 
+    auto lptr = BH.CreateBitCast(
+      BH.CreateGEP(ty, al, NewIdx), 
+      ptr->getType());                             
+    redMap.push_back(std::make_tuple(ci, ptr, al, ty)); 
+    // Assume there is more than one element, and
+    // use the first element for the first iteration of the loop.
+    // roughly: 
+    //   red = init; 
+    //   forall(i = ...){
+    //     red = reduce(red, body(i)); 
+    //   }
+    //   red = init; 
+    //   localred[m+1]; 
+    //   
+    //   forall(k ∈ 0..m-1){
+    //     localred[i] = body(j_0); 
+    //     for(j ∈ j_k_1..j_k_l-1)
+    //       reduce(localred+i, body(j));
+    //   }
+    //   for( j ∈ j_k_m .. n )
+    //     reduce(localred+m, body(j)); 
+    //   }
+    //   for(k ∈ 0..m) 
+    //     reduce(&red, localred[k]); 
+    //
+    ptr->replaceUsesWithIf(lptr, [L](Use &u){
+      if(auto I = dyn_cast<Instruction>(u.getUser())){
+        return L->contains(I->getParent()); 
+      } else {
+        return false;
+      }; 
+    });
+  }
+  */
+
+  // inserts intrinsics
   std::vector<std::pair<Instruction*, CallInst*>> tids; 
   for(auto &BB : F){
     for(auto &I : BB){
@@ -210,12 +287,12 @@ void* launchHIPKernel(llvm::Module& m, void** args, size_t n) {
 	hipFunction_t function; 
 	checkHIP(hipModuleGetFunction_p(&function, module, "kitsune_kernel")); 
 	hipStream_t stream;
-	hipStreamCreate_p(&stream); 
-	hipModuleLaunchKernel_p(function, 1, 1, 1, n, 1, 1, 0, stream, args, NULL); 
+	checkHIP(hipStreamCreate_p(&stream)); 
+	checkHIP(hipModuleLaunchKernel_p(function, 1, 1, 1, n, 1, 1, 0, stream, args, NULL)); 
 
 	return (void*) stream; 
 }
 
 void waitHIPKernel(void* wait) {
-	hipStreamSynchronize_p((hipStream_t)wait);
+	checkHIP(hipStreamSynchronize_p((hipStream_t)wait));
 }

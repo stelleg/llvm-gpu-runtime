@@ -18,7 +18,7 @@
 #include<llvm/Support/raw_os_ostream.h>
 #include<llvm/Target/TargetMachine.h>
 #include<llvm/Support/ToolOutputFile.h>
-#include<llvm/Support/TargetRegistry.h>
+#include<llvm/MC/TargetRegistry.h>
 #include<llvm/Support/SourceMgr.h>
 #include<llvm/Support/Process.h>
 #include<llvm/Linker/Linker.h>
@@ -138,15 +138,15 @@ void* PTXtoELF(const char* ptx){
                                 compile_options);  /* compileOptions */
 
   if (status != NVPTXCOMPILE_SUCCESS) {
-      NVPTXCOMPILER_SAFE_CALL(nvPTXCompilerGetErrorLogSize(compiler, &errorSize));
+    NVPTXCOMPILER_SAFE_CALL(nvPTXCompilerGetErrorLogSize(compiler, &errorSize));
 
-      if (errorSize != 0) {
-          errorLog = (char*)malloc(errorSize+1);
-          NVPTXCOMPILER_SAFE_CALL(nvPTXCompilerGetErrorLog(compiler, errorLog));
-          printf("Error log: %s\n", errorLog);
-          free(errorLog);
-      }
-      exit(1);
+    if (errorSize != 0) {
+      errorLog = (char*)malloc(errorSize+1);
+      NVPTXCOMPILER_SAFE_CALL(nvPTXCompilerGetErrorLog(compiler, errorLog));
+      printf("Error log: %s\n", errorLog);
+      free(errorLog);
+    }
+    exit(1);
   }
 
   NVPTXCOMPILER_SAFE_CALL(nvPTXCompilerGetCompiledProgramSize(compiler, &elfSize));
@@ -157,10 +157,10 @@ void* PTXtoELF(const char* ptx){
   NVPTXCOMPILER_SAFE_CALL(nvPTXCompilerGetInfoLogSize(compiler, &infoSize));
 
   if (infoSize != 0) {
-      infoLog = (char*)malloc(infoSize+1);
-      NVPTXCOMPILER_SAFE_CALL(nvPTXCompilerGetInfoLog(compiler, infoLog));
-      printf("Info log: %s\n", infoLog);
-      free(infoLog);
+    infoLog = (char*)malloc(infoSize+1);
+    NVPTXCOMPILER_SAFE_CALL(nvPTXCompilerGetInfoLog(compiler, infoLog));
+    printf("Info log: %s\n", infoLog);
+    free(infoLog);
   }
 
   NVPTXCOMPILER_SAFE_CALL(nvPTXCompilerDestroy(&compiler));
@@ -185,7 +185,7 @@ std::string LLVMtoPTX(Module& m) {
   m.setTargetTriple(TT.str()); 
   Function& F = *m.getFunction("kitsune_kernel");
 
-  AttrBuilder Attrs;
+  AttrBuilder Attrs(ctx);
   Attrs.addAttribute("target-cpu", cudaarch);
   Attrs.addAttribute("target-features", cudafeatures + ",+" + cudaarch);
   /*
@@ -198,7 +198,7 @@ std::string LLVMtoPTX(Module& m) {
   F.removeFnAttr(Attribute::StackProtectStrong); 
   F.removeFnAttr(Attribute::UWTable); 
   */
-  F.addAttributes(AttributeList::FunctionIndex, Attrs);
+  F.addFnAttrs(Attrs);
   NamedMDNode *Annotations =
     m.getOrInsertNamedMetadata("nvvm.annotations");
 
@@ -231,6 +231,35 @@ std::string LLVMtoPTX(Module& m) {
     }
   }
 
+  // accumulate reductions in kernel 
+  std::set<CallInst*> reductions;
+  for (BasicBlock &BB : F){
+    for (Instruction &I : BB) {
+      if(auto ci = dyn_cast<CallInst>(&I)){
+        auto f = ci->getCalledFunction(); 
+        if(f->getAttributes().hasAttrSomewhere(Attribute::KitsuneReduction)){
+          std::cout << "Found reduction var: " << ci->getArgOperand(0)->getName().str() << 
+                               "with reduction function: " << f->getName().str() << "\n"; 
+          reductions.insert(ci); 
+          //TODO: check the type to confirm valid reduction
+        }
+      }
+    }
+  }
+
+  std::vector<std::tuple<CallInst*, Value* , Value*>> redMap; 
+  // for each reduction, insert a tree-based workgroup reduction 
+  for(CallInst* ci : reductions){
+    // TODO: generic allocation/free calls
+    auto ptr = ci->getArgOperand(0); 
+    auto op = ci->getArgOperand(1); 
+    auto ty = op->getType(); 
+    // Create shared memory allocation for each reduction
+    
+    //auto al = RB.CreateAlloca(ty, nred, ptr->getName() + "_reduction");
+    redMap.push_back(std::make_tuple(ci, ptr, al)); 
+  }
+
   // Check if there are unresolved sumbbols to see if we might need libdevice
   std::set<std::string> unresolved; 
   for(auto &f : m) {
@@ -248,7 +277,7 @@ std::string LLVMtoPTX(Module& m) {
       exit(1);
     }
     std::unique_ptr<llvm::Module> libdevice =
-        parseIRFile(*path, SMD, ctx);
+      parseIRFile(*path, SMD, ctx);
     if(!libdevice){ 
       std::cerr << "Failed to parse libdevice\n"; 
       exit(1);
@@ -353,10 +382,9 @@ std::string LLVMtoPTX(Module& m) {
   return ptx.str().str();  
 }
 
-CUstream launchCudaELF(void* elf, void** args, size_t n){
+CUstream launchCudaELF(void* elf, void** args, size_t n, size_t redSize){
   CUmodule module;
   CUfunction kernel;
-
 
   CUDA_SAFE_CALL(cuModuleLoadDataEx_p(&module, elf, 0, 0, 0));
   CUDA_SAFE_CALL(cuModuleGetFunction_p(&kernel, module, "kitsune_kernel"));
@@ -369,11 +397,11 @@ CUstream launchCudaELF(void* elf, void** args, size_t n){
   CUDA_SAFE_CALL(cuLaunchKernel_p(kernel,
                                  n/blocksize, 1, 1, // grid dim
                                  blocksize, 1, 1, // block dim
-                                 0, stream, // shared mem and stream
+                                 redSize, stream, // shared mem and stream
                                  args, NULL)); // arguments
 
   // Release resources.
-  //CUDA_SAFE_CALL(cuModuleUnload_p(module));
+  CUDA_SAFE_CALL(cuModuleUnload_p(module));
  
   return stream;
 }
@@ -381,7 +409,7 @@ CUstream launchCudaELF(void* elf, void** args, size_t n){
 void* launchCUDAKernel(Module& m, void** args, size_t n) {
   std::string ptx = LLVMtoPTX(m);
   void* elf = PTXtoELF(ptx.c_str()); 
-  return (void*)launchCudaELF(elf, args, n); 
+  return (void*)launchCudaELF(elf, args, n, redSize); 
 }
 
 void waitCUDAKernel(void* vwait) {
