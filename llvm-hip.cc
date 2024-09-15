@@ -37,7 +37,7 @@ void llvm-gpu-debug(const char* msg){
 void* hiphandle; 
 declare(hipGetDevice);
 declare(hipGetDeviceCount);
-declare(hipGetDeviceProperties);
+declare(hipGetDevicePropertiesR0600); // fucking rocm
 declare(hipStreamCreate);
 declare(hipModuleLoadData);
 declare(hipModuleLaunchKernel);
@@ -64,7 +64,7 @@ int initHIP(){
 	if(!hiphandle) return false; 
 	tryLoad(hipGetDevice);
 	tryLoad(hipGetDeviceCount);
-	tryLoad(hipGetDeviceProperties);
+	tryLoad(hipGetDevicePropertiesR0600);
 	tryLoad(hipStreamCreate);
 	tryLoad(hipStreamDestroy);
 	tryLoad(hipStreamSynchronize);
@@ -94,11 +94,8 @@ void* launchHIPKernel(llvm::Module& m, void** args, size_t n) {
 	int deviceId; 		
 	checkHIP(hipGetDevice_p(&deviceId)); 
 	hipDeviceProp_t prop;
-	checkHIP(hipGetDeviceProperties_p(&prop, deviceId));
-  printf("name: %s\n", prop.name); 
-  printf("gcnArchName: %s\n", prop.gcnArchName); 
-  // TODO: gcnArchName broken
-	std::string gcnarch = "gfx1032"; //(prop.gcnArchName); 
+	checkHIP(hipGetDevicePropertiesR0600_p(&prop, deviceId));
+	std::string gcnarch = prop.gcnArchName; 
   Triple TT("amdgcn", "amd", "amdhsa"); 
   m.setTargetTriple(TT.str()); 
   
