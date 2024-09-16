@@ -50,6 +50,9 @@ declare(hipGetErrorString);
 declare(hipStreamSynchronize);
 declare(hipStreamDestroy);
 declare(hipInit);
+//declare(hipMallocManaged); 
+hipError_t (*hipMallocManaged_p)(void** res, size_t n, int f);
+hipError_t (*hipMalloc_p)(void** res, size_t n);
 hipError_t (*hipHostMalloc_p)(void** res, size_t n, int f);
 
 
@@ -77,7 +80,10 @@ int initHIP(){
 	tryLoad(hipModuleGetFunction);
 	tryLoad(hipInit); 
 	tryLoad(hipGetErrorString);
+  hipMallocManaged_p = (decltype(hipMallocManaged_p))(dlsym(hiphandle, "hipMallocManaged")); 
+  hipMalloc_p = (decltype(hipMalloc_p))(dlsym(hiphandle, "hipMalloc")); 
   hipHostMalloc_p = (decltype(hipHostMalloc_p))(dlsym(hiphandle, "hipHostMalloc")); 
+
 	checkHIP(hipInit_p(0)); 
 	int count;
 	checkHIP(hipGetDeviceCount_p(&count)); 
@@ -86,8 +92,17 @@ int initHIP(){
 }
 
 void* hipManagedMalloc(size_t n){
+	int deviceId; 		
+	checkHIP(hipGetDevice_p(&deviceId)); 
+	hipDeviceProp_t prop;
 	void* res;
-	checkHIP(hipHostMalloc_p(&res, n, 0));
+	checkHIP(hipGetDevicePropertiesR0600_p(&prop, deviceId));
+  if(prop.pageableMemoryAccess > 0){
+    printf("supports managed memory: %d\n", prop.managedMemory); 
+    checkHIP(hipMallocManaged_p(&res, n, 0));
+  }
+  else
+    checkHIP(hipHostMalloc_p(&res, n, 0)); 
 	return res;
 }
 
@@ -120,7 +135,6 @@ void* launchHIPKernel(llvm::Module& m, void** args, size_t n) {
 
   StringRef gpuarch = *targetId;
     
-
   std::cout << "gcn arch: " << cpu.str() << std::endl; 
   std::cout << "gcn features: " << features.str() << std::endl; 
 

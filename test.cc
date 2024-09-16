@@ -14,7 +14,7 @@ int main(){
   std::unique_ptr<llvm::Module> ExternalModule =
       parseIRFile("kernel.bc", SMD, C);
 
-  int n = 1024; 
+  int n = 1<<20; 
   double* x = (double*) gpuManagedMalloc(n*sizeof(double)); 
   double* y = (double*) gpuManagedMalloc(n*sizeof(double)); 
   double* z = (double*) gpuManagedMalloc(n*sizeof(double)); 
