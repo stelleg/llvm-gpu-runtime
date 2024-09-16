@@ -127,14 +127,14 @@ void* PTXtoELF(const char* ptx){
 
   NVPTXCOMPILER_SAFE_CALL(nvPTXCompilerGetVersion(&majorVer, &minorVer));
   printf("Current PTX Compiler API Version : %d.%d\n", majorVer, minorVer);
-
+  printf("ptx being compiled: \n %s", ptx); 
   NVPTXCOMPILER_SAFE_CALL(nvPTXCompilerCreate(&compiler,
                                               (size_t)strlen(ptx),  /* ptxCodeLen */
                                               ptx)                  /* ptxCode */
                           );
 
   status = nvPTXCompilerCompile(compiler,
-                                2,                 /* numCompileOptions */
+                                3,                 /* numCompileOptions */
                                 compile_options);  /* compileOptions */
 
   if (status != NVPTXCOMPILE_SUCCESS) {
@@ -231,6 +231,7 @@ std::string LLVMtoPTX(Module& m) {
     }
   }
 
+  /*
   // accumulate reductions in kernel 
   std::set<CallInst*> reductions;
   for (BasicBlock &BB : F){
@@ -259,6 +260,7 @@ std::string LLVMtoPTX(Module& m) {
     //auto al = RB.CreateAlloca(ty, nred, ptr->getName() + "_reduction");
     redMap.push_back(std::make_tuple(ci, ptr, al)); 
   }
+  */
 
   // Check if there are unresolved sumbbols to see if we might need libdevice
   std::set<std::string> unresolved; 
@@ -271,7 +273,7 @@ std::string LLVMtoPTX(Module& m) {
   if(!unresolved.empty()){
     // Load libdevice and check for provided functions
     llvm::SMDiagnostic SMD; 
-    Optional<std::string> path = sys::Process::FindInEnvPath("CUDA_PATH","nvvm/libdevice/libdevice.10.bc"); 
+    std::optional<std::string> path = sys::Process::FindInEnvPath("CUDA_PATH","nvvm/libdevice/libdevice.10.bc"); 
     if(!path){
       std::cerr << "Failed to find libdevice\n"; 
       exit(1);
@@ -347,7 +349,7 @@ std::string LLVMtoPTX(Module& m) {
   Builder.OptLevel = 2; 
   Builder.VerifyInput = 1; 
   Builder.Inliner = createFunctionInliningPass(Builder.OptLevel); 
-  Builder.populateLTOPassManager(PM);  
+  //Builder.populateLTOPassManager(PM);  
   Builder.populateFunctionPassManager(FPM);  
   Builder.populateModulePassManager(PM); 
 
@@ -382,7 +384,7 @@ std::string LLVMtoPTX(Module& m) {
   return ptx.str().str();  
 }
 
-CUstream launchCudaELF(void* elf, void** args, size_t n, size_t redSize){
+CUstream launchCudaELF(void* elf, void** args, size_t n){
   CUmodule module;
   CUfunction kernel;
 
@@ -397,7 +399,7 @@ CUstream launchCudaELF(void* elf, void** args, size_t n, size_t redSize){
   CUDA_SAFE_CALL(cuLaunchKernel_p(kernel,
                                  n/blocksize, 1, 1, // grid dim
                                  blocksize, 1, 1, // block dim
-                                 redSize, stream, // shared mem and stream
+                                 0, stream, // shared mem and stream
                                  args, NULL)); // arguments
 
   // Release resources.
@@ -409,7 +411,7 @@ CUstream launchCudaELF(void* elf, void** args, size_t n, size_t redSize){
 void* launchCUDAKernel(Module& m, void** args, size_t n) {
   std::string ptx = LLVMtoPTX(m);
   void* elf = PTXtoELF(ptx.c_str()); 
-  return (void*)launchCudaELF(elf, args, n, redSize); 
+  return (void*)launchCudaELF(elf, args, n); 
 }
 
 void waitCUDAKernel(void* vwait) {

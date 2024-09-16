@@ -18,6 +18,7 @@
 #include<llvm/Support/ToolOutputFile.h>
 #include<llvm/ADT/StringExtras.h>
 #include<llvm/MC/TargetRegistry.h>
+#include<clang/Basic/TargetID.h>
 
 /*
 void llvm-gpu-debug(const char* msg){
@@ -96,14 +97,37 @@ void* launchHIPKernel(llvm::Module& m, void** args, size_t n) {
 	hipDeviceProp_t prop;
 	checkHIP(hipGetDevicePropertiesR0600_p(&prop, deviceId));
 	std::string gcnarch = prop.gcnArchName; 
+  StringMap<bool> featureMap; 
   Triple TT("amdgcn", "amd", "amdhsa"); 
+  std::optional<StringRef> targetId = clang::parseTargetID(TT, gcnarch, &featureMap); 
+
+  if(!targetId) {
+    std::cerr << "Failed to parse target gpu arch" << std::endl; 
+    exit(1);
+  }
+
+  StringRef cpu = *targetId; 
+  std::string featureStr = "";
+  for(auto &p : featureMap){
+    if(featureStr != "") featureStr += ","; 
+    std::string enabled = p.getValue() ? "+" : "-";  
+    featureStr += enabled + p.getKey().str(); 
+  }
+  StringRef features(featureStr); 
+
+  StringRef gpuarch = *targetId;
+    
+
+  std::cout << "gcn arch: " << cpu.str() << std::endl; 
+  std::cout << "gcn features: " << features.str() << std::endl; 
+
   m.setTargetTriple(TT.str()); 
   
   Function& F = *m.getFunction("kitsune_kernel");
 
   AttrBuilder Attrs(ctx);
-  Attrs.addAttribute("target-cpu", gcnarch);
-  //Attrs.addAttribute("target-features", cudafeatures + ",+" + cudaarch);
+  Attrs.addAttribute("target-cpu", cpu);
+  Attrs.addAttribute("target-features", features);
   /*
   Attrs.addAttribute(Attribute::NoRecurse); 
   Attrs.addAttribute(Attribute::Convergent); 
@@ -221,8 +245,8 @@ void* launchHIPKernel(llvm::Module& m, void** args, size_t n) {
 
   const Target *Target = TargetRegistry::lookupTarget("", TT, error);
   auto TargetMachine =
-      Target->createTargetMachine(TT.getTriple(), gcnarch,
-                                     "", TargetOptions(), Reloc::PIC_,
+      Target->createTargetMachine(TT.getTriple(), cpu,
+                                     features, TargetOptions(), Reloc::PIC_,
                                      CodeModel::Small, CodeGenOpt::Aggressive);
   m.setDataLayout(TargetMachine->createDataLayout());
 
@@ -260,13 +284,15 @@ void* launchHIPKernel(llvm::Module& m, void** args, size_t n) {
   sys::ExecuteAndWait(lld, lldsra);
 
 	// Warning: this changes to from hip- to hipv4- in llvm 13
-	std::string targets = "-targets=host-x86_64-unknown-linux-gnu,hipv4-" 
+	std::string targets = "-targets=host-x86_64-unknown-linux,hipv4-" 
 		+ m.getTargetTriple() + "--" + gcnarch; 
-	std::string inputs = "-inputs=/dev/null," + LinkedObjectFile; 
-	std::string bundledFileStr = "--outputs=" + BundledObjectFile; 
+	std::string input1 = "-input=/dev/null"; 
+  std::string input2 = "-input=" + LinkedObjectFile; 
+	std::string bundledFileStr = "-output=" + BundledObjectFile; 
 	offloadBundleArgList.push_back(clangOffloadBundle.c_str());
 	offloadBundleArgList.push_back("-type=o"); 
-	offloadBundleArgList.push_back(inputs.c_str()); 
+	offloadBundleArgList.push_back(input1.c_str()); 
+	offloadBundleArgList.push_back(input2.c_str()); 
 	offloadBundleArgList.push_back(targets.c_str()); 
 	offloadBundleArgList.push_back(bundledFileStr.c_str());
 	offloadBundleArgList.push_back(nullptr); 
