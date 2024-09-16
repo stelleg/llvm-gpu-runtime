@@ -32,7 +32,7 @@ int main(){
   for(int i=0; i<n; i++){
     if(z[i] != x[i] + y[i]){
       std::cout << "failure: "; 
-      printf("%f != %f\n",z[i],x[i] + y[i]); 
+      printf("%d: %f != %f\n",i, z[i],x[i] + y[i]); 
       exit(1); 
     }
   }

@@ -6,6 +6,8 @@
 #include<llvm/IR/Instructions.h>
 #include<llvm/IR/Intrinsics.h>
 #include<llvm/IR/IntrinsicsAMDGPU.h>
+#include<llvm/IR/IRBuilder.h>
+#include<llvm/IR/User.h>
 #include<llvm/Transforms/Utils/BasicBlockUtils.h>
 #include<llvm/IR/Verifier.h>
 #include<llvm/Option/ArgList.h>
@@ -34,6 +36,7 @@ void llvm-gpu-debug(const char* msg){
 
 #define declare(name) decltype(name)* name##_p = NULL
 #define tryLoad(name) name##_p = (decltype(name)*)dlsym(hiphandle, #name)
+
 
 void* hiphandle; 
 declare(hipGetDevice);
@@ -138,6 +141,15 @@ void* launchHIPKernel(llvm::Module& m, void** args, size_t n) {
   F.addFnAttrs(Attrs);
 
   auto tid = Intrinsic::getDeclaration(&m, Intrinsic::amdgcn_workitem_id_x);
+  auto ntid = Intrinsic::getDeclaration(&m, Intrinsic::amdgcn_workgroup_id_x); 
+
+  IRBuilder<> B(F.getEntryBlock().getFirstNonPHI()); 
+  Value *tidv = B.CreateCall(tid, {}); 
+  Value *ntidv = B.CreateCall(ntid, {});
+  Value *ctaidv = ConstantInt::get(tidv->getType(), 8*prop.warpSize);// B.CreateCall(ctaid, {}); 
+  
+  Value *tidoff = B.CreateMul(ctaidv, ntidv); 
+  Value *gtid = B.CreateAdd(tidoff, tidv); 
 
   /*
   // accumulate reductions in loop
@@ -203,22 +215,22 @@ void* launchHIPKernel(llvm::Module& m, void** args, size_t n) {
   */
 
   // inserts intrinsics
-  std::vector<std::pair<Instruction*, CallInst*>> tids; 
+  std::vector<Instruction*> tids; 
   for(auto &BB : F){
     for(auto &I : BB){
       if(auto *CI = dyn_cast<CallInst>(&I)){
         if(Function *f = CI->getCalledFunction()){
           if(f->getName() == "gtid"){
-            tids.push_back(std::make_pair(&I, CallInst::Create(tid)));
+            tids.push_back(&I);
           }
         }	
       }
     }
   }
 
-  for(auto p : tids){
-    ReplaceInstWithInst(p.first, p.second);
-    p.second->setTailCall();
+  for(auto c : tids){
+    c->replaceAllUsesWith(gtid); 
+    c->eraseFromParent(); 
   }
 
   if(auto *f = m.getFunction("gtid")) f->eraseFromParent();
@@ -309,9 +321,12 @@ void* launchHIPKernel(llvm::Module& m, void** args, size_t n) {
 	checkHIP(hipModuleLoadData_p(&module, (const void*)hsaco.c_str())); 
 	hipFunction_t function; 
 	checkHIP(hipModuleGetFunction_p(&function, module, "kitsune_kernel")); 
-	hipStream_t stream;
+  hipStream_t stream;
 	checkHIP(hipStreamCreate_p(&stream)); 
-	checkHIP(hipModuleLaunchKernel_p(function, 1, 1, 1, n, 1, 1, 0, stream, args, NULL)); 
+
+  int blocksize = 8 * prop.warpSize;  
+  printf("running with griddim %ld block %d\n", n/blocksize, blocksize); 
+	checkHIP(hipModuleLaunchKernel_p(function, n/blocksize, 1, 1, blocksize, 1, 1, 0, stream, args, NULL)); 
 
 	return (void*) stream; 
 }
