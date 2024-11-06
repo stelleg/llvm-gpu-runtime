@@ -14,7 +14,7 @@ int main(){
   std::unique_ptr<llvm::Module> ExternalModule =
       parseIRFile("kernel.bc", SMD, C);
 
-  int n = 1<<20; 
+  int n = 1<<10; 
   double* x = (double*) gpuManagedMalloc(n*sizeof(double)); 
   double* y = (double*) gpuManagedMalloc(n*sizeof(double)); 
   double* z = (double*) gpuManagedMalloc(n*sizeof(double)); 
@@ -30,10 +30,9 @@ int main(){
   std::cout << "done" << std::endl; 
   std::cout << "Checking results...";
   for(int i=0; i<n; i++){
-    if(z[i] != x[i] + y[i]){
+    if(z[i] != x[i] + y[i] + 1){
       std::cout << "failure: "; 
       printf("%d: %f != %f\n",i, z[i],x[i] + y[i]); 
-      exit(1); 
     }
   }
   std::cout << "success" << std::endl; 

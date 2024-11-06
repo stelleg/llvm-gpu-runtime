@@ -4,3 +4,4 @@ void* hipManagedMalloc(size_t n);
 int initHIP();
 void* launchHIPKernel(llvm::Module& m, void** args, size_t n); 
 void waitHIPKernel(void* wait); 
+uint64_t hipGridSize(); 

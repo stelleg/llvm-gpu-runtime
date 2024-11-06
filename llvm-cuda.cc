@@ -32,6 +32,7 @@ CUcontext context;
 CUdevice device; 
 CUstream stream;
 int warpsize; 
+int numProcs; 
 
 #define declare(name) decltype(name)* name##_p = NULL; 
 #define tryLoad(name) name##_p = (decltype(name)*)dlsym(handle, #name)
@@ -103,6 +104,10 @@ bool initCUDA(){
   if(cuInit_p(0) != CUDA_SUCCESS) return false;
   CUDA_SAFE_CALL(cuDeviceGet_p(&device, 0));
   CUDA_SAFE_CALL(cuCtxCreate_v2_p(&context, 0, device));
+
+  cuDeviceGetAttribute_p(&numProcs, CU_DEVICE_ATTRIBUTE_MULTI_PROCESSOR_COUNT, device); 
+  cuDeviceGetAttribute_p(&warpsize, CU_DEVICE_ATTRIBUTE_WARP_SIZE, device); 
+
   return true;
 }
 
@@ -175,7 +180,6 @@ std::string LLVMtoPTX(Module& m) {
   int maj, min; 
   cuDeviceGetAttribute_p(&maj, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, device); 
   cuDeviceGetAttribute_p(&min, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, device); 
-  cuDeviceGetAttribute_p(&warpsize, CU_DEVICE_ATTRIBUTE_WARP_SIZE, device); 
 
   std::ostringstream arch;
   arch << "sm_" << maj << min;
@@ -208,7 +212,6 @@ std::string LLVMtoPTX(Module& m) {
   AV.push_back(ValueAsMetadata::get(ConstantInt::get(Type::getInt32Ty(ctx),
                                                      1)));
   Annotations->addOperand(MDNode::get(ctx, AV));
-
   auto tid = Intrinsic::getDeclaration(&m, Intrinsic::nvvm_read_ptx_sreg_tid_x);
   auto ntid = Intrinsic::getDeclaration(&m, Intrinsic::nvvm_read_ptx_sreg_ntid_x);
   auto ctaid = Intrinsic::getDeclaration(&m, Intrinsic::nvvm_read_ptx_sreg_ctaid_x);
@@ -420,5 +423,9 @@ void waitCUDAKernel(void* vwait) {
   CUDA_SAFE_CALL(cuStreamSynchronize_p(stream)); 
   //CUDA_SAFE_CALL(cuStreamDestroy_v2_p(wait)); 
   //CUDA_SAFE_CALL(cuCtxDestroy_v2_p(context));
+}
+
+uint64_t cudaGridSize(){
+  return numProcs * warpSize * 4; 
 }
 

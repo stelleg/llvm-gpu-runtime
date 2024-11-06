@@ -23,6 +23,16 @@ typedef enum {
 
 runtime globalRuntime = none;
 
+uint64_t gpuGridSize(){
+  switch(globalRuntime){
+    case cuda:
+      return cudaGridSize();
+    case hip:
+      return hipGridSize(); 
+    default:
+      return 1UL<<16; 
+  }
+}
 void *gpuManagedMalloc(uint64_t n){
 	switch(globalRuntime){
 		case hip:

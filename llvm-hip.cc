@@ -1,3 +1,4 @@
+#include"llvm-hip.h"
 #include<iostream>
 #include<dlfcn.h>
 #include<llvm/IR/LegacyPassManager.h>
@@ -22,14 +23,6 @@
 #include<llvm/MC/TargetRegistry.h>
 #include<clang/Basic/TargetID.h>
 
-/*
-void llvm-gpu-debug(const char* msg){
-  if(const char* env_p = std::getenv("DEBUG_LLVM_HIP")){
-    std::cout << msg << std::endl;
-  }
-
-}
-*/
 //#include<llvm/Transforms/IPO/PassManagerBuilder.h>
 #define __HIP_PLATFORM_AMD__ 1
 #include<hip/hip_runtime_api.h>
@@ -40,6 +33,7 @@ void llvm-gpu-debug(const char* msg){
 
 void* hiphandle; 
 declare(hipGetDevice);
+declare(hipSetDevice);
 declare(hipGetDeviceCount);
 declare(hipGetDevicePropertiesR0600); // fucking rocm
 declare(hipStreamCreate);
@@ -55,6 +49,10 @@ hipError_t (*hipMallocManaged_p)(void** res, size_t n, int f);
 hipError_t (*hipMalloc_p)(void** res, size_t n);
 hipError_t (*hipHostMalloc_p)(void** res, size_t n, int f);
 
+#define debug(code)                                                     \
+    if(std::getenv("DEBUG_LLVM_HIP")){                                  \
+      code;                                                             \
+    }
 
 void checkHIP(hipError_t in){
   if(in !=  HIP_SUCCESS){
@@ -70,6 +68,7 @@ int initHIP(){
   hiphandle = dlopen("libamdhip64.so", RTLD_LAZY); 
 	if(!hiphandle) return false; 
 	tryLoad(hipGetDevice);
+	tryLoad(hipSetDevice);
 	tryLoad(hipGetDeviceCount);
 	tryLoad(hipGetDevicePropertiesR0600);
 	tryLoad(hipStreamCreate);
@@ -94,15 +93,16 @@ int initHIP(){
 void* hipManagedMalloc(size_t n){
 	int deviceId; 		
 	checkHIP(hipGetDevice_p(&deviceId)); 
+  checkHIP(hipSetDevice_p(deviceId)); 
 	hipDeviceProp_t prop;
 	void* res;
 	checkHIP(hipGetDevicePropertiesR0600_p(&prop, deviceId));
-  if(prop.pageableMemoryAccess > 0){
-    printf("supports managed memory: %d\n", prop.managedMemory); 
-    checkHIP(hipMallocManaged_p(&res, n, 0));
-  }
-  else
-    checkHIP(hipHostMalloc_p(&res, n, 0)); 
+  //if(prop.pageableMemoryAccess > 0){
+  debug(printf("supports managed memory: %b\n", prop.managedMemory))
+  checkHIP(hipMallocManaged_p(&res, n, hipMemAttachGlobal));
+  //}
+  //else
+    //checkHIP(hipHostMalloc_p(&res, n, 0)); 
 	return res;
 }
 
@@ -115,6 +115,7 @@ void* launchHIPKernel(llvm::Module& m, void** args, size_t n) {
 	hipDeviceProp_t prop;
 	checkHIP(hipGetDevicePropertiesR0600_p(&prop, deviceId));
 	std::string gcnarch = prop.gcnArchName; 
+
   StringMap<bool> featureMap; 
   Triple TT("amdgcn", "amd", "amdhsa"); 
   std::optional<StringRef> targetId = clang::parseTargetID(TT, gcnarch, &featureMap); 
@@ -135,8 +136,8 @@ void* launchHIPKernel(llvm::Module& m, void** args, size_t n) {
 
   StringRef gpuarch = *targetId;
     
-  std::cout << "gcn arch: " << cpu.str() << std::endl; 
-  std::cout << "gcn features: " << features.str() << std::endl; 
+  debug(std::cout << "gcn arch: " << cpu.str() << std::endl) 
+  debug(std::cout << "gcn features: " << features.str() << std::endl)
 
   m.setTargetTriple(TT.str()); 
   
@@ -249,7 +250,7 @@ void* launchHIPKernel(llvm::Module& m, void** args, size_t n) {
 
   if(auto *f = m.getFunction("gtid")) f->eraseFromParent();
 
-  m.print(llvm::errs(), nullptr);
+  debug(m.print(llvm::errs(), nullptr))
 
 	// Ugh, this sucks. Have to use command line utilities and temporary files
 	// despite the code existing in the same repository. Might be worth looking 
@@ -338,13 +339,24 @@ void* launchHIPKernel(llvm::Module& m, void** args, size_t n) {
   hipStream_t stream;
 	checkHIP(hipStreamCreate_p(&stream)); 
 
-  int blocksize = 8 * prop.warpSize;  
-  printf("running with griddim %ld block %d\n", n/blocksize, blocksize); 
-	checkHIP(hipModuleLaunchKernel_p(function, n/blocksize, 1, 1, blocksize, 1, 1, 0, stream, args, NULL)); 
+  int blocksize = 4 * prop.warpSize; 
+  uint64_t gridSize = hipGridSize() / blocksize; 
+  debug(printf("running with griddim %ld block %d\n", gridSize, blocksize)) 
+	checkHIP(hipModuleLaunchKernel_p(function, gridSize, 1, 1, blocksize, 1, 1, 0, stream, args, NULL)); 
 
 	return (void*) stream; 
 }
 
 void waitHIPKernel(void* wait) {
 	checkHIP(hipStreamSynchronize_p((hipStream_t)wait));
+}
+
+uint64_t hipGridSize(){
+	int deviceId; 		
+	checkHIP(hipGetDevice_p(&deviceId)); 
+  checkHIP(hipSetDevice_p(deviceId)); 
+	hipDeviceProp_t prop;
+	checkHIP(hipGetDevicePropertiesR0600_p(&prop, deviceId));
+  debug(printf("warpsize: %d, multiProcessorCount: %d\n",  prop.warpSize, prop.multiProcessorCount))
+  return prop.warpSize * 4 * prop.multiProcessorCount;   
 }

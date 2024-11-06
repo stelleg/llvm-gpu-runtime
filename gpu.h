@@ -12,6 +12,7 @@ void *gpuManagedMalloc(uint64_t n);
 void initRuntime(); 
 void* launchBCKernel(const char* bc, uint64_t bcsize, void** args, uint64_t n); 
 void waitKernel(void* wait); 
+uint64_t gpuGridSize(); 
 #ifdef __cplusplus
 }
 #endif
