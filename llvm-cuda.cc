@@ -26,6 +26,7 @@
 #include<llvm/Transforms/IPO.h>
 #include<nvPTXCompiler.h>
 #include<cuda.h>
+#include"llvm-cuda.h"
 
 // TODO: do better than just global versions of these
 CUcontext context;
@@ -54,6 +55,11 @@ declare(cuMemAllocManaged);
 declare(cuDeviceGetAttribute); 
 
 using namespace llvm; 
+
+#define debug(code)                                                     \
+    if(std::getenv("DEBUG_LLVM_GPU")){                                  \
+      code;                                                             \
+    }
 
 #define CUDA_SAFE_CALL(x)                                               \
     do {                                                                \
@@ -105,7 +111,7 @@ bool initCUDA(){
   CUDA_SAFE_CALL(cuDeviceGet_p(&device, 0));
   CUDA_SAFE_CALL(cuCtxCreate_v2_p(&context, 0, device));
 
-  cuDeviceGetAttribute_p(&numProcs, CU_DEVICE_ATTRIBUTE_MULTI_PROCESSOR_COUNT, device); 
+  cuDeviceGetAttribute_p(&numProcs, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device); 
   cuDeviceGetAttribute_p(&warpsize, CU_DEVICE_ATTRIBUTE_WARP_SIZE, device); 
 
   return true;
@@ -131,8 +137,8 @@ void* PTXtoELF(const char* ptx){
                                   };
 
   NVPTXCOMPILER_SAFE_CALL(nvPTXCompilerGetVersion(&majorVer, &minorVer));
-  printf("Current PTX Compiler API Version : %d.%d\n", majorVer, minorVer);
-  printf("ptx being compiled: \n %s", ptx); 
+  debug(printf("Current PTX Compiler API Version : %d.%d\n", majorVer, minorVer));
+  debug(printf("ptx being compiled: \n %s", ptx)); 
   NVPTXCOMPILER_SAFE_CALL(nvPTXCompilerCreate(&compiler,
                                               (size_t)strlen(ptx),  /* ptxCodeLen */
                                               ptx)                  /* ptxCode */
@@ -164,7 +170,7 @@ void* PTXtoELF(const char* ptx){
   if (infoSize != 0) {
     infoLog = (char*)malloc(infoSize+1);
     NVPTXCOMPILER_SAFE_CALL(nvPTXCompilerGetInfoLog(compiler, infoLog));
-    printf("Info log: %s\n", infoLog);
+    debug(printf("Info log: %s\n", infoLog));
     free(infoLog);
   }
 
@@ -325,7 +331,7 @@ std::string LLVMtoPTX(Module& m) {
             if(f->getName() == "gtid"){
               tids.push_back(&I);
             }				
-          }	
+          }
         }
       }
     }
@@ -368,6 +374,7 @@ std::string LLVMtoPTX(Module& m) {
     std::cerr << error << std:: endl;   
     exit(1);
   }
+
   auto PTXTargetMachine =
       PTXTarget->createTargetMachine(TT.getTriple(), cudaarch,
                                      "+ptx64", TargetOptions(), Reloc::PIC_,
@@ -387,7 +394,7 @@ std::string LLVMtoPTX(Module& m) {
   return ptx.str().str();  
 }
 
-CUstream launchCudaELF(void* elf, void** args, size_t n){
+void* launchCudaELF(void* elf, void** args, size_t n){
   CUmodule module;
   CUfunction kernel;
 
@@ -398,23 +405,25 @@ CUstream launchCudaELF(void* elf, void** args, size_t n){
   // (8 * warpsize) seems like reasonable default block size 
   // TODO: come up with more sophisticated heuristic
   int blocksize = 8 * warpsize;  
-  assert(n % blocksize == 0); 
+  int gridsize = cudaGridSize()/blocksize; 
   CUDA_SAFE_CALL(cuLaunchKernel_p(kernel,
-                                 n/blocksize, 1, 1, // grid dim
+                                 gridsize, 1, 1, // grid dim
                                  blocksize, 1, 1, // block dim
                                  0, stream, // shared mem and stream
                                  args, NULL)); // arguments
 
   // Release resources.
-  CUDA_SAFE_CALL(cuModuleUnload_p(module));
+  //CUDA_SAFE_CALL(cuModuleUnload_p(module));
  
-  return stream;
+  return (void*)stream;
 }
 
-void* launchCUDAKernel(Module& m, void** args, size_t n) {
+void* launchCUDAKernel(Module& m, void** args, size_t n, void** bin) {
   std::string ptx = LLVMtoPTX(m);
-  void* elf = PTXtoELF(ptx.c_str()); 
-  return (void*)launchCudaELF(elf, args, n); 
+  void* elf = PTXtoELF(ptx.c_str());  
+  if(bin)
+    *bin = elf; 
+  return launchCudaELF(elf, args, n); 
 }
 
 void waitCUDAKernel(void* vwait) {
@@ -426,6 +435,7 @@ void waitCUDAKernel(void* vwait) {
 }
 
 uint64_t cudaGridSize(){
-  return numProcs * warpSize * 4; 
+  debug(printf("gridsize: %d\n", numProcs * warpsize * 4)); 
+  return 2 * numProcs * warpsize * 8; 
 }
 

@@ -6,9 +6,12 @@
 #include<llvm/IRReader/IRReader.h>
 #include<llvm/Support/SourceMgr.h>
 #include<fstream>
-
 #include<error.h>
 #include<stdbool.h>
+#include<map>
+
+// We keep a map from pointer to bitcode to pointer to elf
+std::map<const char*, void*> kernelMap; 
 
 void err(const char* msg){
   return error(1, 1, "%s", msg);
@@ -65,6 +68,9 @@ void initRuntime(){
 }
 
 void* launchBCKernel(const char* bc, uint64_t bcsize, void** args, uint64_t n){
+  if(auto search = kernelMap.find(bc); search != kernelMap.end()){
+    return launchBinKernel(search->second, args, n); 
+  }
   llvm::LLVMContext C; 
   llvm::SMDiagnostic SMD; 
   std::string strbuf(bc, bcsize); 
@@ -80,18 +86,31 @@ void* launchBCKernel(const char* bc, uint64_t bcsize, void** args, uint64_t n){
     SMD.print("Failed to parse kernel IR: ", llvm::errs()); 
     exit(1); 
   }
-    
-  return launchKernel(*mod, args, n); 
+  void* bin; 
+  void* wait = launchKernel(*mod, args, n, &bin); 
+  auto p = kernelMap.try_emplace(bc, bin); 
+  kernelMap[bc] = bin; 
+  return wait; 
 }
 
-void* launchKernel(llvm::Module& bc, void** args, uint64_t n){
+void* launchBinKernel(void* bin, void** args, uint64_t n){
+  switch(globalRuntime){
+    case cuda:
+      return launchCudaELF(bin, args, n);
+    default:
+      err("unspported binary launch"); 
+  }
+  return nullptr; 
+}
+
+void* launchKernel(llvm::Module& bc, void** args, uint64_t n, void** bin){
   switch(globalRuntime){
     case spirv: 
       return launchSPIRVKernel(bc, args, n);
     case hip:
       return launchHIPKernel(bc, args, n);
     case cuda:
-      return launchCUDAKernel(bc, args, n);
+      return launchCUDAKernel(bc, args, n, bin);
     default:
       err("Can't get kernel without valid runtime");
   }

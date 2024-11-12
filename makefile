@@ -2,7 +2,7 @@
 all: test libllvm-gpu.so 
 
 nvptx=${CUDA_PATH}/lib64/libnvptxcompiler_static.a
-links:=-lrt -lcurses -ldl -lpthread -lz -lLLVM-16 -lclangBasic -L/opt/kitsune/lib
+links:=-lrt -lcurses -ldl -lpthread -lz -lLLVM-16 -lclangBasic -L/opt/kitsune/lib 
 incs=-I${CUDA_PATH}/include/  -I${CUDA_PATH}/targets/x86_64-linux/include -I/opt/kitsune/include
 opts=-g -fPIC
 flags=${links} ${incs} ${opts} -Wall 
@@ -30,7 +30,7 @@ cuda.o: check-cuda.cc llvm-cuda.cc nocuda.cc
 	${clang} ${opts} ${incs} -c $< -o $@
 
 linkedcuda.o: cuda.o
-	ld -r -o $@ $< ${nvptx} || cp $< $@
+	ld -r -o $@ $< /usr/lib/libpthread.a ${nvptx} || cp $< $@
 
 hip.o: check-hip.cc llvm-hip.cc nohip.cc
 	${clang} ${opts} ${incs} -c $< -o $@
