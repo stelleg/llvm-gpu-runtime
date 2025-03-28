@@ -435,7 +435,7 @@ void waitCUDAKernel(void* vwait) {
 }
 
 uint64_t cudaGridSize(){
-  debug(printf("gridsize: %d\n", numProcs * warpsize * 4)); 
+  debug(printf("gridsize: %d\n", 2 * numProcs * warpsize * 8)); 
   return 2 * numProcs * warpsize * 8; 
 }
 
