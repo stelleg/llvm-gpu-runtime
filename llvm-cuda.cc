@@ -1,16 +1,16 @@
 #include<stdbool.h>
-#include<sstream>
-#include<iostream>
 #include<dlfcn.h>
 #include<llvm/IR/LegacyPassManager.h>
 #include<llvm/IR/Constants.h>
 #include<llvm/IR/Instruction.h>
+#include<llvm/IR/Module.h>
 #include<llvm/IR/Verifier.h>
 #include<llvm/IR/Instructions.h>
 #include<llvm/IR/IRBuilder.h>
 #include<llvm/IR/Intrinsics.h>
 #include<llvm/IR/IntrinsicsNVPTX.h>
 #include<llvm/IRReader/IRReader.h>
+#include<llvm/Passes/PassBuilder.h>
 #include<llvm/Transforms/Utils/BasicBlockUtils.h>
 #include<llvm/Support/TargetSelect.h>
 #include<llvm/Support/CommandLine.h>
@@ -22,10 +22,14 @@
 #include<llvm/Support/SourceMgr.h>
 #include<llvm/Support/Process.h>
 #include<llvm/Linker/Linker.h>
-#include<llvm/Transforms/IPO/PassManagerBuilder.h>
 #include<llvm/Transforms/IPO.h>
 #include<nvPTXCompiler.h>
 #include<cuda.h>
+
+#include<sstream>
+#include<set>
+#include<iostream>
+
 #include"llvm-cuda.h"
 
 // TODO: do better than just global versions of these
@@ -82,8 +86,10 @@ using namespace llvm;
     } while(0)
 
 void* cudaManagedMalloc(size_t n){
+  debug(printf("allocating %ld bytes in cuda\n", n)) 
 	CUdeviceptr p;
 	CUDA_SAFE_CALL(cuMemAllocManaged_p(&p, n, CU_MEM_ATTACH_HOST));
+  debug(printf("%p \n", (void*)p)) 
 	return (void*)p;
 }
 
@@ -352,15 +358,36 @@ std::string LLVMtoPTX(Module& m) {
   auto ptxbuf = new SmallVector<char, 1<<20>(); 
   raw_svector_ostream ptx(*ptxbuf); 
 
-  legacy::PassManager PM;
-  legacy::FunctionPassManager FPM(&m); 
-  PassManagerBuilder Builder;
-  Builder.OptLevel = 2; 
-  Builder.VerifyInput = 1; 
-  Builder.Inliner = createFunctionInliningPass(Builder.OptLevel); 
-  //Builder.populateLTOPassManager(PM);  
-  Builder.populateFunctionPassManager(FPM);  
-  Builder.populateModulePassManager(PM); 
+
+  // Create the analysis managers.
+  // These must be declared in this order so that they are destroyed in the
+  // correct order due to inter-analysis-manager references.
+  LoopAnalysisManager LAM;
+  FunctionAnalysisManager FAM;
+  CGSCCAnalysisManager CGAM;
+  ModuleAnalysisManager MAM;
+
+  // Create the new pass manager builder.
+  // Take a look at the PassBuilder constructor parameters for more
+  // customization, e.g. specifying a TargetMachine or various debugging
+  // options.
+  PassBuilder PB;
+
+  // Register all the basic analyses with the managers.
+  PB.registerModuleAnalyses(MAM);
+  PB.registerCGSCCAnalyses(CGAM);
+  PB.registerFunctionAnalyses(FAM);
+  PB.registerLoopAnalyses(LAM);
+  PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+  // Create the pass manager.
+  // This one corresponds to a typical -O2 optimization pipeline.
+  ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(OptimizationLevel::O2);
+
+  // Optimize the IR!
+  MPM.run(m, MAM);
+
+  
 
   // TODO: Hard coded machine configuration, use cuda to check 
   std::string error;
@@ -378,15 +405,13 @@ std::string LLVMtoPTX(Module& m) {
   auto PTXTargetMachine =
       PTXTarget->createTargetMachine(TT.getTriple(), cudaarch,
                                      "+ptx64", TargetOptions(), Reloc::PIC_,
-                                     CodeModel::Small, CodeGenOpt::Aggressive);
+                                     CodeModel::Small, CodeGenOptLevel::Default);
   m.setDataLayout(PTXTargetMachine->createDataLayout());
 
-  bool Fail = PTXTargetMachine->addPassesToEmitFile(PM, ptx, nullptr, CodeGenFileType::CGFT_AssemblyFile, false); 
+  legacy::PassManager PM;
+  bool Fail = PTXTargetMachine->addPassesToEmitFile(PM, ptx, nullptr, CodeGenFileType::AssemblyFile, false); 
   assert(!Fail && "Failed to emit PTX"); 
   
-  FPM.doInitialization();
-  for(Function &F : m) FPM.run(F);
-  FPM.doFinalization();
   PM.run(m); 
   
   //m.print(llvm::errs(), nullptr); 
@@ -413,7 +438,7 @@ void* launchCudaELF(void* elf, void** args, size_t n){
                                  args, NULL)); // arguments
 
   // Release resources.
-  //CUDA_SAFE_CALL(cuModuleUnload_p(module));
+  //CUDA_SAFE_CALL(cuModuleUnload(module));
  
   return (void*)stream;
 }
@@ -430,8 +455,8 @@ void waitCUDAKernel(void* vwait) {
 	//CUstream wait = (CUstream)vwait;
 	CUstream wait = stream; 
   CUDA_SAFE_CALL(cuStreamSynchronize_p(stream)); 
-  //CUDA_SAFE_CALL(cuStreamDestroy_v2_p(wait)); 
-  //CUDA_SAFE_CALL(cuCtxDestroy_v2_p(context));
+  //CUDA_SAFE_CALL(cuStreamDestroy_v2(wait)); 
+  //CUDA_SAFE_CALL(cuCtxDestroy_v2(context));
 }
 
 uint64_t cudaGridSize(){

@@ -23,7 +23,7 @@ int main(){
     x[i] = (double)i;
     y[i] = 3.14-(double)i;
   }
-  void* args[] = { &x, &y, &z }; 
+  void* args[] = { &x, &y, &z, nullptr }; 
   auto w = launchKernel(*ExternalModule.get(), args, n); 
   std::cout << "Launched kernel...";
   waitKernel(w); 
@@ -32,7 +32,7 @@ int main(){
   for(int i=0; i<n; i++){
     if(z[i] != x[i] + y[i] + 1){
       std::cout << "failure: "; 
-      printf("%d: %f != %f\n",i, z[i],x[i] + y[i]); 
+      printf("%d: %f != %f\n", i, z[i], x[i] + y[i]); 
     }
   }
   std::cout << "success" << std::endl; 
