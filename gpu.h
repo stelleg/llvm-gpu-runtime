@@ -1,6 +1,12 @@
 #include<stdint.h>
 #include<stddef.h>
 
+#define debug(code)                                                     \
+    if(std::getenv("DEBUG_LLVM_GPU")){                                  \
+      code;                                                             \
+    }
+
+
 #ifdef __cplusplus
 namespace llvm {
 class Module; 

@@ -3,6 +3,7 @@
 #include"llvm-hip.h"
 #include"llvm-spirv.h"
 #include<llvm/IR/Module.h>
+#include<llvm/IR/Verifier.h>
 #include<llvm/IRReader/IRReader.h>
 #include<llvm/Support/SourceMgr.h>
 #include<fstream>
@@ -69,6 +70,7 @@ void initRuntime(){
 
 void* launchBCKernel(const char* bc, uint64_t bcsize, void** args, uint64_t n){
   if(auto search = kernelMap.find(bc); search != kernelMap.end()){
+    debug(printf("Found kernel, launching cached version"))
     return launchBinKernel(search->second, args, n); 
   }
   llvm::LLVMContext C; 
@@ -82,6 +84,10 @@ void* launchBCKernel(const char* bc, uint64_t bcsize, void** args, uint64_t n){
   llvm::MemoryBufferRef mbr(sr, "kernelModRef"); 
   std::unique_ptr<llvm::Module> mod =
       parseIR(mbr, SMD, C);
+
+  debug(mod->dump())
+  debug(verifyModule(*mod, &llvm::errs())) 
+
   if(!mod){
     SMD.print("Failed to parse kernel IR: ", llvm::errs()); 
     exit(1); 

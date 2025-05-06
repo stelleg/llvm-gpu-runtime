@@ -26,6 +26,8 @@
 #include<nvPTXCompiler.h>
 #include<cuda.h>
 
+#include "gpu.h"
+
 #include<sstream>
 #include<set>
 #include<iostream>
@@ -59,11 +61,6 @@ declare(cuMemAllocManaged);
 declare(cuDeviceGetAttribute); 
 
 using namespace llvm; 
-
-#define debug(code)                                                     \
-    if(std::getenv("DEBUG_LLVM_GPU")){                                  \
-      code;                                                             \
-    }
 
 #define CUDA_SAFE_CALL(x)                                               \
     do {                                                                \
